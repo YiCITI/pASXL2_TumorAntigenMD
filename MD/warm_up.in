@@ -1,0 +1,25 @@
+Heating from 0 K to 310 K under NVT conditions
+&cntrl
+  imin   = 0,        ! 进行分子动力学模拟
+  irest  = 0,        ! 不从先前的重启文件继续
+  ntx    = 1,        ! 读取坐标，不读取速度
+  nstlim = 100000,   ! 模拟步数（100,000 步 × 1 fs = 100 ps）
+  dt     = 0.001,    ! 时间步长为 1 fs
+  ntc    = 2,        ! 使用 SHAKE 限制所有含氢键
+  ntf    = 2,        ! 不计算受 SHAKE 限制的键的力
+  ntb    = 1,        ! 使用周期性边界条件（恒定体积）
+  ntp    = 0,        ! 不进行压力调节
+  cut    = 10.0,     ! 非键相互作用截断距离为 10 Å
+  ntt    = 3,        ! 使用 Langevin 恒温器
+  gamma_ln = 2.0,    ! Langevin 碰撞频率（单位：ps⁻¹）
+  tempi  = 0.0,      ! 初始温度为 0 K
+  temp0  = 310.0,    ! 目标温度为 310 K
+  ig     = -1,       ! 使用随机种子
+  ntpr   = 500,      ! 每 500 步打印一次能量信息
+  ntwx   = 500,      ! 每 500 步写入一次轨迹
+  ntwr   = 5000,     ! 每 5000 步写入一次重启文件
+  iwrap  = 1,        ! 将超出主盒子的分子重新映射回主盒子
+  ntr    = 1,        ! 启用位置约束
+  restraint_wt = 2.0,  ! 约束力常数（单位：kcal/mol·Å²）
+  restraintmask = '@N,CA,C,O'  ! 约束所有残基的主链原子
+/

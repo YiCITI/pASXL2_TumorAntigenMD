@@ -1,0 +1,12 @@
+optimization
+ &cntrl
+ imin = 1,
+ maxcyc = 10000,
+ ncyc = 500,
+ ntb = 1,
+ igb = 0,
+ cut = 10,
+ nmropt = 0,
+ iwrap =1
+/
+
