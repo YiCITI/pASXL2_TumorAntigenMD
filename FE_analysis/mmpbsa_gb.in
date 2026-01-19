@@ -1,0 +1,10 @@
+&general
+  startframe=1, endframe=5000, interval=25,
+  verbose=1,
+  strip_mask=':WAT,:Na+,:CL',
+/
+&gb
+  igb=5,          
+  saltcon=0.150,  
+/
+

@@ -1,0 +1,15 @@
+&general
+  startframe=1, endframe=5000, interval=25,
+  verbose=1,
+  strip_mask=':WAT,:Na+,:CL',
+/
+&pb
+  istrng = 0.150,
+  fillratio = 4.0,
+  radiopt = 0,      
+  indi    = 2.0,    
+  exdi    = 80.0,
+  inp     = 2,      
+/
+
+
