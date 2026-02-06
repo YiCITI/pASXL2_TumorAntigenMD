@@ -7,10 +7,10 @@ ASXL2_analysis: script for differential expression and pathway enrichment analys
 ## MD
 MD: Amber scripts we used in this project. Processed by Jiahui Zhang.
 
-## test
+## Test
 test: Force field test, RSMD test, and RMSF test. The first part of the results. Processed by Jiahui Zhang and Lin Lv.
 
-## interaction analysis
+## Interaction analysis
 interaction_analysis: the non-bonding interaction analysis of the pHLA complex. The second part of the results. Processed by Jiahui Zhang.
 
 ## FE analysis
