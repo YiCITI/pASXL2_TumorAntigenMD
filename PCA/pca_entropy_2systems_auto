@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+import mdtraj as md
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+
+# ============================================================
+# 1. Basic settings
+# ============================================================
+
+# The script scans the current working directory.
+# A valid system folder must be named phos, prot, or wt and contain:
+#   t1.dcd, t2.dcd, t3.dcd, t4.dcd, t5.dcd
+#   r1.pdb, r2.pdb, r3.pdb, r4.pdb, r5.pdb
+#
+# Supported comparisons:
+#   wt   -> phos   output: pca_entropy_phos_wt.csv
+#   phos -> prot   output: pca_entropy_prot_phos.csv
+#
+# If all three folders are present and valid, both CSV files will be written.
+# If only two folders are present, only the corresponding comparison will be written.
+
+ALLOWED_SYSTEMS = ["phos", "prot", "wt"]
+REPLICAS = [1, 2, 3, 4, 5]
+
+TRAJ_TEMPLATE = "t{}.dcd"
+TOP_TEMPLATE = "r{}.pdb"
+
+# Same trajectory truncation as the PCA plotting script:
+# total trajectory = 550 ns, analyze only the last 500 ns.
+TOTAL_TRAJ_TIME_NS = 550.0
+ANALYSIS_TIME_NS = 500.0
+
+# Same chain indexing as the PCA plotting script.
+# chain 0 = peptide
+# chain 1 = HLA chain 2
+# chain 2 = HLA chain 3
+PEPTIDE_CHAIN_INDEX = 0
+CHAIN2_INDEX = 1
+CHAIN3_INDEX = 2
+
+# Same entropy settings as analyze.py.
+BIN_SIZE = 0.1
+EPS = 1e-6
+
+PCA_TARGETS = [
+    ("all", "All CA atoms"),
+    ("peptide", "Peptide CA atoms"),
+    ("chain2", "HLA chain 2 CA atoms"),
+    ("chain3", "HLA chain 3 CA atoms"),
+]
+
+COMPARISONS = [
+    {
+        "required": {"phos", "wt"},
+        "systems_for_pca": ["phos", "wt"],
+        "start": "wt",
+        "end": "phos",
+        "output": "pca_entropy_phos_wt.csv",
+        "delta_col": "delta_H_wt_to_phos",
+    },
+    {
+        "required": {"phos", "prot"},
+        "systems_for_pca": ["phos", "prot"],
+        "start": "phos",
+        "end": "prot",
+        "output": "pca_entropy_prot_phos.csv",
+        "delta_col": "delta_H_phos_to_prot",
+    },
+]
+
+
+# ============================================================
+# 2. File and topology helpers
+# ============================================================
+
+def required_files_for_system(system_dir):
+    system_dir = Path(system_dir)
+    required = []
+    for rep in REPLICAS:
+        required.append(system_dir / TRAJ_TEMPLATE.format(rep))
+        required.append(system_dir / TOP_TEMPLATE.format(rep))
+    return required
+
+
+def is_valid_system_folder(system_dir):
+    system_dir = Path(system_dir)
+    return system_dir.is_dir() and all(p.exists() for p in required_files_for_system(system_dir))
+
+
+def get_valid_systems(base_dir="."):
+    base_dir = Path(base_dir)
+    valid = []
+
+    print("\nDetected system folders:")
+    for name in ALLOWED_SYSTEMS:
+        p = base_dir / name
+        if not p.is_dir():
+            print(f"  {name}: not found")
+            continue
+
+        missing = [str(x.relative_to(p)) for x in required_files_for_system(p) if not x.exists()]
+        if missing:
+            print(f"  {name}: incomplete, missing {missing}")
+        else:
+            print(f"  {name}: valid")
+            valid.append(name)
+
+    return set(valid)
+
+
+def get_last_500ns(traj):
+    n_frames_total = traj.n_frames
+    analysis_frames = int(round(n_frames_total * ANALYSIS_TIME_NS / TOTAL_TRAJ_TIME_NS))
+    analysis_frames = min(analysis_frames, n_frames_total)
+    start_frame = n_frames_total - analysis_frames
+    return traj[start_frame:], start_frame, n_frames_total
+
+
+def get_ca_indices_by_chain(top, chain_index):
+    chains = list(top.chains)
+
+    if chain_index >= len(chains):
+        raise ValueError(
+            f"chain_index={chain_index} out of range. "
+            f"This topology only has {len(chains)} chains."
+        )
+
+    indices = []
+    for res in chains[chain_index].residues:
+        for atom in res.atoms:
+            if atom.name == "CA":
+                indices.append(atom.index)
+
+    return np.array(indices, dtype=int)
+
+
+def get_ca_indices(top, region):
+    if region == "all":
+        indices = []
+        for chain in top.chains:
+            for res in chain.residues:
+                for atom in res.atoms:
+                    if atom.name == "CA":
+                        indices.append(atom.index)
+        return np.array(indices, dtype=int)
+
+    if region == "peptide":
+        return get_ca_indices_by_chain(top, PEPTIDE_CHAIN_INDEX)
+
+    if region == "chain2":
+        return get_ca_indices_by_chain(top, CHAIN2_INDEX)
+
+    if region == "chain3":
+        return get_ca_indices_by_chain(top, CHAIN3_INDEX)
+
+    raise ValueError(f"Unknown region: {region}")
+
+
+def print_chain_info(top, label):
+    print(f"\nTopology chain information for {label}:")
+    for chain in top.chains:
+        residues = list(chain.residues)
+        ca_count = sum(1 for res in residues for atom in res.atoms if atom.name == "CA")
+        if residues:
+            first_res = residues[0]
+            last_res = residues[-1]
+            print(
+                f"  chain index {chain.index}: "
+                f"n_res = {len(residues)}, "
+                f"n_CA = {ca_count}, "
+                f"first = {first_res.name}{first_res.resSeq}, "
+                f"last = {last_res.name}{last_res.resSeq}"
+            )
+        else:
+            print(f"  chain index {chain.index}: empty chain")
+
+
+# ============================================================
+# 3. Entropy helpers, same binning logic as analyze.py
+# ============================================================
+
+def entropy_from_probability(p):
+    # Same numerical convention as analyze.py: H = -sum p ln(p + EPS).
+    return float(-np.sum(p * np.log(p + EPS)))
+
+
+def make_common_bins(pc1_a, pc2_a, pc1_b, pc2_b, bin_size=BIN_SIZE):
+    all_values = np.concatenate([pc1_a, pc1_b, pc2_a, pc2_b])
+
+    min_edge = np.floor(all_values.min() / bin_size) * bin_size
+    max_edge = np.ceil(all_values.max() / bin_size) * bin_size
+
+    if np.isclose(min_edge, max_edge):
+        max_edge = min_edge + bin_size
+
+    bins = np.arange(min_edge, max_edge + bin_size, bin_size)
+
+    if bins.size < 2:
+        bins = np.array([min_edge, min_edge + bin_size], dtype=float)
+
+    return bins
+
+
+def joint_entropy_2d(pc1, pc2, bins):
+    h, _, _ = np.histogram2d(pc1, pc2, bins=[bins, bins])
+    total = h.sum()
+    if total == 0:
+        raise ValueError("Empty 2D histogram; please check PCA scores and bin settings.")
+
+    p = h / total
+    return entropy_from_probability(p)
+
+
+# ============================================================
+# 4. PCA + entropy calculation
+# ============================================================
+
+def load_items_for_systems(systems, region):
+    loaded = []
+
+    for system in systems:
+        for rep in REPLICAS:
+            traj_file = Path(system) / TRAJ_TEMPLATE.format(rep)
+            top_file = Path(system) / TOP_TEMPLATE.format(rep)
+
+            if not traj_file.exists():
+                raise FileNotFoundError(f"Cannot find trajectory file: {traj_file}")
+            if not top_file.exists():
+                raise FileNotFoundError(f"Cannot find topology file: {top_file}")
+
+            traj = md.load(str(traj_file), top=str(top_file))
+            traj, start_frame, n_frames_total = get_last_500ns(traj)
+
+            print(
+                f"{system} rep{rep} | {region}: "
+                f"total frames = {n_frames_total}, "
+                f"start frame = {start_frame + 1}, "
+                f"analysis frames = {traj.n_frames}"
+            )
+
+            loaded.append(
+                {
+                    "system": system,
+                    "replica": rep,
+                    "traj": traj,
+                    "top": traj.topology,
+                    "traj_file": traj_file,
+                    "top_file": top_file,
+                }
+            )
+
+    return loaded
+
+
+def pca_scores_for_region(region, systems):
+    """
+    Run PCA in one combined coordinate space for the selected systems.
+    This follows the original plotting script: all replicas from both systems
+    are aligned to a common reference, then projected onto the same PC1/PC2.
+    """
+    loaded = load_items_for_systems(systems, region)
+
+    ref_item = loaded[0]
+    ref_frame = ref_item["traj"][0]
+    ref_top = ref_item["top"]
+
+    print_chain_info(ref_top, str(ref_item["top_file"]))
+
+    ref_indices = get_ca_indices(ref_top, region)
+    if len(ref_indices) == 0:
+        raise ValueError(f"No CA atoms selected for region: {region}")
+
+    print(f"\nRegion {region}: reference selected CA atoms = {len(ref_indices)}")
+
+    X_list = []
+    labels = []
+
+    for item in loaded:
+        traj = item["traj"]
+        top = item["top"]
+        system = item["system"]
+
+        atom_indices = get_ca_indices(top, region)
+        if len(atom_indices) == 0:
+            raise ValueError(f"No CA atoms selected for region {region} in {item['top_file']}")
+
+        if len(atom_indices) != len(ref_indices):
+            raise ValueError(
+                f"Different number of selected CA atoms for region {region}.\n"
+                f"Reference: {len(ref_indices)} atoms\n"
+                f"{item['top_file']}: {len(atom_indices)} atoms\n"
+                f"Please check chain order or topology consistency."
+            )
+
+        traj_aligned = traj.superpose(
+            ref_frame,
+            atom_indices=atom_indices,
+            ref_atom_indices=ref_indices,
+        )
+
+        coords = traj_aligned.xyz[:, atom_indices, :]
+        X = coords.reshape(coords.shape[0], -1)
+
+        X_list.append(X)
+        labels.extend([system] * X.shape[0])
+
+    X_all = np.vstack(X_list)
+    labels = np.array(labels)
+
+    X_mean = X_all.mean(axis=0)
+    X_centered = X_all - X_mean
+
+    cov = np.dot(X_centered.T, X_centered) / (X_centered.shape[0] - 1)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+
+    order = eigvals.argsort()[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+
+    scores = np.dot(X_centered, eigvecs[:, :2])
+
+    explained = eigvals / eigvals.sum()
+    pc1_var = float(explained[0] * 100.0)
+    pc2_var = float(explained[1] * 100.0)
+
+    return {
+        "pc1": scores[:, 0],
+        "pc2": scores[:, 1],
+        "labels": labels,
+        "n_CA": int(len(ref_indices)),
+        "pc1_variance_percent": pc1_var,
+        "pc2_variance_percent": pc2_var,
+    }
+
+
+def entropy_row_for_region(region, description, systems, start_system, end_system, delta_col):
+    result = pca_scores_for_region(region, systems)
+
+    pc1 = result["pc1"]
+    pc2 = result["pc2"]
+    labels = result["labels"]
+
+    mask_start = labels == start_system
+    mask_end = labels == end_system
+
+    if not mask_start.any():
+        raise ValueError(f"No PCA scores found for start system: {start_system}")
+    if not mask_end.any():
+        raise ValueError(f"No PCA scores found for end system: {end_system}")
+
+    bins = make_common_bins(
+        pc1[mask_start], pc2[mask_start],
+        pc1[mask_end], pc2[mask_end],
+        bin_size=BIN_SIZE,
+    )
+
+    H_start = joint_entropy_2d(pc1[mask_start], pc2[mask_start], bins)
+    H_end = joint_entropy_2d(pc1[mask_end], pc2[mask_end], bins)
+    delta_H = H_end - H_start
+
+    row = {
+        "region": region,
+        "description": description,
+        "n_CA": result["n_CA"],
+        "pc1_variance_percent": result["pc1_variance_percent"],
+        "pc2_variance_percent": result["pc2_variance_percent"],
+        "entropy_type": "joint_PC1_PC2",
+        "bin_size": BIN_SIZE,
+        f"H_{start_system}": H_start,
+        f"H_{end_system}": H_end,
+        delta_col: delta_H,
+    }
+
+    return row
+
+
+def write_entropy_csv(comparison):
+    systems = comparison["systems_for_pca"]
+    start_system = comparison["start"]
+    end_system = comparison["end"]
+    output = comparison["output"]
+    delta_col = comparison["delta_col"]
+
+    print("\n" + "=" * 80)
+    print(f"Calculating PCA entropy: {start_system} -> {end_system}")
+    print(f"Systems in shared PCA space: {systems}")
+    print(f"Output CSV: {output}")
+    print("=" * 80)
+
+    rows = []
+    for region, description in PCA_TARGETS:
+        print("\n" + "-" * 80)
+        print(f"Region: {region} | {description}")
+        print("-" * 80)
+        rows.append(
+            entropy_row_for_region(
+                region=region,
+                description=description,
+                systems=systems,
+                start_system=start_system,
+                end_system=end_system,
+                delta_col=delta_col,
+            )
+        )
+
+    df = pd.DataFrame(rows)
+
+    # Keep the entropy change as the last column, as requested.
+    first_cols = [
+        "region",
+        "description",
+        "n_CA",
+        "pc1_variance_percent",
+        "pc2_variance_percent",
+        "entropy_type",
+        "bin_size",
+        f"H_{start_system}",
+        f"H_{end_system}",
+    ]
+    df = df[first_cols + [delta_col]]
+
+    df.to_csv(output, index=False)
+
+    print(f"\nSaved: {output}")
+    print(df.to_string(index=False))
+
+
+# ============================================================
+# 5. Main
+# ============================================================
+
+def main():
+    valid_systems = get_valid_systems(".")
+
+    runnable = []
+    for comp in COMPARISONS:
+        if comp["required"].issubset(valid_systems):
+            runnable.append(comp)
+
+    if not runnable:
+        raise RuntimeError(
+            "\nNo supported comparison can be calculated.\n"
+            "Expected valid folders for either phos+wt or phos+prot.\n"
+            "Each valid folder must contain t1.dcd-t5.dcd and r1.pdb-r5.pdb."
+        )
+
+    # If exactly two valid systems are present, make sure they are one of the two requested pairs.
+    if len(valid_systems) == 2 and valid_systems not in ({"phos", "wt"}, {"phos", "prot"}):
+        raise RuntimeError(
+            f"\nUnsupported pair detected: {sorted(valid_systems)}\n"
+            "Supported pairs are phos+wt and phos+prot."
+        )
+
+    print("\nComparisons to be written:")
+    for comp in runnable:
+        print(f"  {comp['start']} -> {comp['end']}  =>  {comp['output']}")
+
+    for comp in runnable:
+        write_entropy_csv(comp)
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
