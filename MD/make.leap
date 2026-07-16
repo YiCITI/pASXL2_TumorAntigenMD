@@ -1,0 +1,17 @@
+source leaprc.protein.ff19SB
+source leaprc.phosaa19SB
+source leaprc.water.tip3p
+
+protein = loadpdb fine.pdb
+
+solvateoct protein TIP3PBOX 10.0
+
+addions protein CL 42
+
+addions protein Na+ 0
+
+saveamberparm protein system.prmtop system.inpcrd
+
+savepdb protein solvated.pdb
+
+quit
