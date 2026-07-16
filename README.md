@@ -1,5 +1,5 @@
 # pASXL2_TumorAntigenMD
-The detailed scripts we used in the article "The phosphorylation of an antigen peptide from ASXL2 protein alters the peptide-HLA binding affinity and the interaction dynamics of the pHLA complex".
+The detailed scripts we used in the article "Phosphorylation of a tumor-derived ASXL2 epitope remodels the HLA-bound peptide conformational ensemble and interaction network of the peptide-HLA complex".
 
 ## ASXL2 analysis
 ASXL2_analysis: script for differential expression and pathway enrichment analysis. 
