@@ -39,7 +39,7 @@ Analysis RMSF and plot RMSD figures.
 
 ## Interaction analysis
 interaction_analysis: the non-bonding interaction analysis of the pHLA complex. The second part of the results.
-### plot_interactions_2systems_auto_5rep_mean_diff_heatmap_pdf.pt
+### plot_interactions_2systems_auto_5rep_mean_diff_heatmap_pdf.py
 Extract non-bonding interactions from the trajectories.
 
 
@@ -56,7 +56,7 @@ Plot the free energy change figure.
 
 ## PCA analysis
 PCA_analysis: the PCA analysis scripts for this project. The fourth part of the results. 
-### pca_entropy_2systems_auto
+### pca_entropy_2systems_auto.py
 PCA-derived divergence analysis.
 ### plot_pca_2systems_auto_5rep.py
 Plot the PC map. 
